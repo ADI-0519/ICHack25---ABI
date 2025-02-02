@@ -1,0 +1,805 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>AI Model Builder – Scratch Interface</title>
+  <link href="static/dark.css" rel = "stylesheet" type = "text/css" id = "theme-style" />
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+</head>
+<body>
+  <div class="container">
+    <!-- Sidebar with tabs -->
+    <div class="sidebar" id="sidebar">
+      <div class="tab-header">
+        <div class="tab-models" data-tab="models">Models</div>
+        <div class="tab-data" data-tab="data">Data</div>
+        <div class="tab-other" data-tab="other">Other</div> 
+      </div>
+      <div class="tab-content" id="tabContent">
+        <!-- Content loaded based on active tab -->
+      </div>
+      <i class="fa-solid fa-trash" onclick="home_func()" id="trash"></i>
+    </div>
+    <!-- Workspace -->
+    <div class="workspace" id="workspace">
+      <div>
+        <nav class="navbar">
+          <div class="navbar_container">
+            <a id="navbar_logo">ABI</a>
+            <ul class="navbar_menu">
+              <li class="navbar_item">
+                <a href="static/login.html" class="navbar_link">Login</a>
+              </li>
+              <li class="navbar_item">
+                <a href="static/signup.html" class="navbar_link">Signup</a>
+              </li>
+            </ul>
+          </div>
+        </nav>
+      </div>
+      <i class="fa-solid fa-circle-half-stroke" onclick="handleClick()" id="lightdark"></i>
+      <!-- SVG overlay for connections -->
+      <svg id="svgOverlay"></svg>
+      <!-- Run container -->
+      <div class="run-container">
+        <button class="run-btn" id="runBtn">Run Model</button>
+        <div id="predictionOutput"></div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    /************************************
+     * Global Variables for Connection Linking
+     ************************************/
+    let currentConnectionStart = null; // { el, pos }
+    let connections = []; // Each connection: { fromEl, from, toEl, to }
+    const svgOverlay = document.getElementById('svgOverlay');
+
+    function handleClick() {
+      let theme = document.getElementById("theme-style");
+
+            // Check which CSS file is active and toggle it
+      if (theme.getAttribute("href") === "static/dark.css")   {
+          theme.setAttribute("href", "static/light.css");
+      } 
+      else {
+          theme.setAttribute("href", "static/dark.css");
+      }
+    }
+
+
+    // Utility: get center coordinates of an element relative to workspace
+    function getCenterCoords(el) {
+      const rect = el.getBoundingClientRect();
+      const wsRect = workspace.getBoundingClientRect();
+      return {
+        x: rect.left - wsRect.left + rect.width / 2,
+        y: rect.top - wsRect.top + rect.height / 2
+      };
+    }
+
+    // Draw all connections in the SVG overlay.
+    function drawConnections() {
+      svgOverlay.innerHTML = "";
+      connections.forEach(conn => {
+        const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
+        line.setAttribute("x1", conn.from.x);
+        line.setAttribute("y1", conn.from.y);
+        line.setAttribute("x2", conn.to.x);
+        line.setAttribute("y2", conn.to.y);
+        line.setAttribute("stroke", "black");
+        line.setAttribute("stroke-width", "2");
+        svgOverlay.appendChild(line);
+      });
+    }
+
+    // Update connections when blocks move.
+    function updateConnections() {
+      connections.forEach(conn => {
+        conn.from = getCenterCoords(conn.fromEl);
+        conn.to = getCenterCoords(conn.toEl);
+      });
+      drawConnections();
+    }
+
+    function home_func(){
+      window.location.href="http://127.0.0.1:5000"
+    }
+
+    // Remove any connection associated with a given block.
+    function removeConnectionsForElement(el) {
+      connections = connections.filter(conn => {
+        return !(conn.fromEl.parentElement === el || conn.toEl.parentElement === el);
+      });
+      drawConnections();
+    }
+
+    // Handle connection point events.
+    function attachConnectionEvents(connPoint) {
+      connPoint.addEventListener('mousedown', function(e) {
+        e.stopPropagation();
+        if (connPoint.classList.contains('start')) {
+          // If already connected, delete the connection.
+          const existingIndex = connections.findIndex(conn => conn.fromEl === connPoint);
+          if (existingIndex !== -1) {
+            connections.splice(existingIndex, 1);
+            drawConnections();
+            currentConnectionStart = null;
+            return;
+          }
+          currentConnectionStart = {
+            el: connPoint,
+            pos: getCenterCoords(connPoint)
+          };
+        }
+      });
+      connPoint.addEventListener('mouseup', function(e) {
+        e.stopPropagation();
+        if (connPoint.classList.contains('end') && currentConnectionStart) {
+          const startEl = currentConnectionStart.el;
+          const endEl = connPoint;
+          // Prevent linking a block to itself.
+          if (startEl.parentElement === endEl.parentElement) {
+            currentConnectionStart = null;
+            return;
+          }
+          // Allow only one link per end connector.
+          if (connections.some(conn => conn.toEl === endEl)) {
+            currentConnectionStart = null;
+            return;
+          }
+          const connection = {
+            fromEl: startEl,
+            from: getCenterCoords(startEl),
+            toEl: endEl,
+            to: getCenterCoords(endEl)
+          };
+          connections.push(connection);
+          drawConnections();
+        }
+        currentConnectionStart = null;
+      });
+    }
+
+    /************************************
+     * Neural Network Chain Validation
+     ************************************/
+    function validateNNChain() {
+      const inputLayer = workspace.querySelector('.input-layer');
+      const outputLayer = workspace.querySelector('.output-layer');
+      if (!inputLayer || !outputLayer) return false;
+      const inputConn = inputLayer.querySelector('.connection-point.start');
+      const outputConn = outputLayer.querySelector('.connection-point.end');
+      let visited = new Set();
+      function dfs(currentConn) {
+        if (currentConn === outputConn) return true;
+        visited.add(currentConn);
+        for (let conn of connections) {
+          if (conn.fromEl === currentConn && !visited.has(conn.toEl)) {
+            if (dfs(conn.toEl)) return true;
+          }
+        }
+        return false;
+      }
+      return dfs(inputConn);
+    }
+
+    /************************************
+     * Sidebar Tabs and Blocks Setup
+     ************************************/
+    const tabContent = document.getElementById('tabContent');
+
+    // Blocks for the Models tab.
+    const regressionModels = [
+      { label: "Linear Regression Model", type: "linearRegression" },
+      { label: "Polynomial Regression Model", type: "polynomialRegression" },
+      { label: "Stochastic Gradient Descent Regression", type: "sgdRegression" }
+    ];
+    const classificationModels = [
+      { label: "Logistic Regression Model", type: "logisticRegression" },
+      { label: "Random Forest Classifier", type: "randomForest" }
+    ];
+    // Neural network blocks for the Models tab.
+    const nnModels = [
+      { label: "Input Layer", type: "inputLayer" },
+      { label: "Output Layer", type: "outputLayer" }
+    ];
+    // Data blocks.
+    const dataBlocks = [
+      { label: "Data Block", type: "dataBlock" }
+    ];
+    // Blocks for the Other tab.
+    const hyperparamBlocks = [
+      { label: "Batch Size", type: "batchSize", default: 32 },
+      { label: "Learning Rate", type: "learningRate", default: 0.001 },
+      { label: "Epochs", type: "epochs", default: 10 }
+    ];
+    const neuronLayerBlocks = [
+      { label: "Neuron Layer", type: "neuronLayer", default: 16, min: 16, max: 128 }
+    ];
+
+    function renderTab(tab) {
+      tabContent.innerHTML = "";
+      if (tab === "models") {
+        // Regression Models section.
+        const regHeading = document.createElement('div');
+        regHeading.className = "section-heading";
+        regHeading.textContent = "Regression Models";
+        tabContent.appendChild(regHeading);
+        regressionModels.forEach(item => {
+          const block = document.createElement('div');
+          block.classList.add('block');
+          block.setAttribute('draggable', 'true');
+          block.setAttribute('data-type', item.type);
+          block.textContent = item.label;
+          tabContent.appendChild(block);
+          block.addEventListener('dragstart', function(e) {
+            e.dataTransfer.setData('text/plain', item.type);
+          });
+        });
+        // Classification Models section.
+        const classHeading = document.createElement('div');
+        classHeading.className = "section-heading";
+        classHeading.className = "section-heading2";
+        classHeading.textContent = "Classification Models";
+        tabContent.appendChild(classHeading);
+        classificationModels.forEach(item => {
+          const block = document.createElement('div');
+          block.classList.add('block');
+          block.setAttribute('draggable', 'true');
+          block.setAttribute('data-type', item.type);
+          block.textContent = item.label;
+          tabContent.appendChild(block);
+          block.addEventListener('dragstart', function(e) {
+            e.dataTransfer.setData('text/plain', item.type);
+          });
+        });
+        // Neural Networks section.
+        const nnHeading = document.createElement('div');
+        nnHeading.className = "section-heading";
+        nnHeading.className = "section-heading3";
+        nnHeading.textContent = "Neural Networks";
+        tabContent.appendChild(nnHeading);
+        nnModels.forEach(item => {
+          const block = document.createElement('div');
+          block.classList.add('block');
+          block.setAttribute('draggable', 'true');
+          block.setAttribute('data-type', item.type);
+          block.textContent = item.label;
+          tabContent.appendChild(block);
+          block.addEventListener('dragstart', function(e) {
+            e.dataTransfer.setData('text/plain', item.type);
+          });
+        });
+      } else if (tab === "data") {
+        dataBlocks.forEach(item => {
+          const block = document.createElement('div');
+          block.classList.add('block');
+          block.setAttribute('draggable', 'true');
+          block.setAttribute('data-type', item.type);
+          block.textContent = item.label;
+          tabContent.appendChild(block);
+          block.addEventListener('dragstart', function(e) {
+            e.dataTransfer.setData('text/plain', item.type);
+          });
+        });
+      } else if (tab === "other") {
+        // Hyperparameter blocks.
+        const hyperHeading = document.createElement('div');
+        hyperHeading.className = "section-heading";
+        hyperHeading.textContent = "Hyperparameters";
+        tabContent.appendChild(hyperHeading);
+        hyperparamBlocks.forEach(item => {
+          const block = document.createElement('div');
+          block.classList.add('block');
+          block.setAttribute('draggable', 'true');
+          block.setAttribute('data-type', item.type);
+          block.setAttribute('data-default', item.default);
+          block.textContent = item.label;
+          tabContent.appendChild(block);
+          block.addEventListener('dragstart', function(e) {
+            e.dataTransfer.setData('text/plain', item.type);
+            e.dataTransfer.setData('hyperparam', JSON.stringify({label: item.label, default: item.default}));
+          });
+        });
+        // Neuron Layer blocks.
+        const neuronHeading = document.createElement('div');
+        neuronHeading.className = "section-heading";
+        neuronHeading.className = "section-heading3";
+        neuronHeading.textContent = "Neuron Layers";
+        tabContent.appendChild(neuronHeading);
+        neuronLayerBlocks.forEach(item => {
+          const block = document.createElement('div');
+          block.classList.add('block');
+          block.setAttribute('draggable', 'true');
+          block.setAttribute('data-type', item.type);
+          block.setAttribute('data-default', item.default);
+          block.setAttribute('data-min', item.min);
+          block.setAttribute('data-max', item.max);
+          block.textContent = item.label;
+          tabContent.appendChild(block);
+          block.addEventListener('dragstart', function(e) {
+            e.dataTransfer.setData('text/plain', item.type);
+            e.dataTransfer.setData('neuron', JSON.stringify({label: item.label, default: item.default, min: item.min, max: item.max}));
+          });
+        });
+      }
+    }
+    renderTab("models");
+    document.querySelectorAll('.tab-header div').forEach(tabElem => {
+      tabElem.addEventListener('click', function() {
+        const tab = this.getAttribute('data-tab');
+        renderTab(tab);
+      });
+    });
+
+    /************************************
+     * Workspace Drag & Drop for Creating Blocks
+     ************************************/
+    const workspace = document.getElementById('workspace');
+    workspace.addEventListener('dragover', function(e) {
+      e.preventDefault();
+    });
+    workspace.addEventListener('drop', function(e) {
+      e.preventDefault();
+      // Create new blocks only if dropped directly on the workspace.
+      if (e.target === workspace) {
+        const type = e.dataTransfer.getData('text/plain');
+        // Generic model blocks.
+        const supportedModels = ["linearRegression", "polynomialRegression", "sgdRegression", "logisticRegression", "randomForest"];
+        if (supportedModels.includes(type)) {
+          const modelLabelMap = {
+            linearRegression: "Linear Regression",
+            polynomialRegression: "Polynomial Regression",
+            sgdRegression: "Stochastic Gradient Descent Regression",
+            logisticRegression: "Logistic Regression",
+            randomForest: "Random Forest Classifier"
+          };
+          const modelBlock = document.createElement('div');
+          if (type === "logisticRegression" || type === "randomForest"){
+            modelBlock.classList.add('draggable', 'model-block2');
+          }
+          else {
+          modelBlock.classList.add('draggable', 'model-block');
+          }
+
+          modelBlock.setAttribute('data-origin', 'workspace');
+          modelBlock.setAttribute('data-model-type', type);
+          modelBlock.innerHTML = `
+            <h4>${modelLabelMap[type]}</h4>
+            <div class="input-group">
+              <input type="text" class="model-name" placeholder="Enter unique model name">
+            </div>
+            <div class="input-group">
+              <div class="drop-area" data-drop-type="dataBlock" data-purpose="train">
+                Drop Train Data Here
+              </div>
+            </div>
+            <div class="input-group ratio-control">
+              <span class="ratio-label">Train to test ratio</span>
+            </div>
+            <div class="input-group ratio-control">
+              <button class="decrement">–</button>
+              <span class="ratio-value">0.2</span>
+              <button class="increment">+</button>
+            </div>
+            <div class="input-group">
+              <div class="drop-area" data-drop-type="dataBlock" data-purpose="predict">
+                Drop Predict Data Here
+              </div>
+            </div>
+            <div class="input-group">
+              <div class="hyperparam-area" data-purpose="hyperparam">
+                Drop Hyperparameter Block(s) Here (Optional)
+              </div>
+            </div>
+          `;
+          const wsRect = workspace.getBoundingClientRect();
+          modelBlock.style.left = (e.clientX - wsRect.left - 150) + 'px';
+          modelBlock.style.top  = (e.clientY - wsRect.top - 50) + 'px';
+          workspace.appendChild(modelBlock);
+          makeDraggable(modelBlock);
+          addModelBlockHandlers(modelBlock);
+        }
+        // Neural Network Blocks: Input and Output Layers.
+        else if (type === "inputLayer" || type === "outputLayer") {
+          const nnBlock = document.createElement('div');
+          nnBlock.classList.add('draggable', 'nn-block');
+          nnBlock.setAttribute('data-origin', 'workspace');
+          nnBlock.setAttribute('data-model-type', type);
+          if (type === "inputLayer") {
+            nnBlock.classList.add('input-layer');
+            // Input Layer: include train drop area and hyperparameter drop area.
+            nnBlock.innerHTML = `
+              <h4>Input Layer</h4>
+              <div class="input-group">
+                <input type="text" class="model-name" placeholder="Enter unique model name">
+              </div>
+              <div class="input-group">
+                <div class="drop-area" data-drop-type="dataBlock" data-purpose="train">
+                  Drop Train Data Here
+                </div>
+              </div>
+              <div class="input-group ratio-control">
+                <span class="ratio-label">Train to test ratio</span>
+              </div>
+              <div class="input-group ratio-control">
+                <button class="decrement">–</button>
+                <span class="ratio-value">0.2</span>
+                <button class="increment">+</button>
+              </div>
+              <div class="input-group">
+                <div class="hyperparam-area" data-purpose="hyperparam">
+                  Drop Hyperparameter Block(s) Here (Optional)
+                </div>
+              </div>
+              <!-- Connection point: start only -->
+              <div class="connection-point start"></div>
+            `;
+          } else if (type === "outputLayer") {
+            nnBlock.classList.add('output-layer');
+            // Output Layer: include predict drop area.
+            nnBlock.innerHTML = `
+              <h4>Output Layer</h4>
+              <div class="input-group">
+                <div class="drop-area" data-drop-type="dataBlock" data-purpose="predict">
+                  Drop Predict Data Here
+                </div>
+              </div>
+              <!-- Connection point: end only -->
+              <div class="connection-point end"></div>
+            `;
+          }
+          const wsRect = workspace.getBoundingClientRect();
+          nnBlock.style.left = (e.clientX - wsRect.left - 150) + 'px';
+          nnBlock.style.top  = (e.clientY - wsRect.top - 50) + 'px';
+          workspace.appendChild(nnBlock);
+          makeDraggable(nnBlock);
+          addModelBlockHandlers(nnBlock);
+          nnBlock.querySelectorAll('.connection-point').forEach(cp => {
+            attachConnectionEvents(cp);
+          });
+        }
+        // Neuron Layer Blocks (from the Other tab).
+        else if (type === "neuronLayer") {
+          const neuronData = JSON.parse(e.dataTransfer.getData('neuron'));
+          const neuronBlock = document.createElement('div');
+          neuronBlock.classList.add('draggable', 'nn-block', 'neuron-layer');
+          neuronBlock.setAttribute('data-origin', 'workspace');
+          neuronBlock.setAttribute('data-model-type', "feedforwardNN");
+          neuronBlock.innerHTML = `
+            <h4>Neuron Layer</h4>
+            <div class="input-group ratio-control">
+              <button class="decrement">–</button>
+              <span class="neuron-count">${neuronData.default}</span>
+              <button class="increment">+</button>
+            </div>
+            <!-- Two connection points: end on left, start on right -->
+            <div class="connection-point start"></div>
+            <div class="connection-point end"></div>
+          `;
+          const wsRect = workspace.getBoundingClientRect();
+          neuronBlock.style.left = (e.clientX - wsRect.left - 150) + 'px';
+          neuronBlock.style.top  = (e.clientY - wsRect.top - 50) + 'px';
+          workspace.appendChild(neuronBlock);
+          makeDraggable(neuronBlock);
+          neuronBlock.querySelectorAll('.connection-point').forEach(cp => {
+            attachConnectionEvents(cp);
+          });
+          const decBtn = neuronBlock.querySelector('.decrement');
+          const incBtn = neuronBlock.querySelector('.increment');
+          const neuronCountSpan = neuronBlock.querySelector('.neuron-count');
+          const minVal = parseInt(neuronData.min);
+          const maxVal = parseInt(neuronData.max);
+          decBtn.addEventListener('click', function(e) {
+            let value = parseInt(neuronCountSpan.textContent);
+            value = Math.max(minVal, value - 1);
+            neuronCountSpan.textContent = value;
+          });
+          incBtn.addEventListener('click', function(e) {
+            let value = parseInt(neuronCountSpan.textContent);
+            value = Math.min(maxVal, value + 1);
+            neuronCountSpan.textContent = value;
+          });
+        }
+      }
+    });
+
+    /*****************************************
+     * DELETE BLOCKS IF DRAGGED BACK TO SIDEBAR
+     *****************************************/
+    const sidebar = document.getElementById('sidebar');
+    function checkForDeletion(element) {
+      const elemRect = element.getBoundingClientRect();
+      const sidebarRect = sidebar.getBoundingClientRect();
+      if (elemRect.right > sidebarRect.left &&
+          elemRect.left < sidebarRect.right &&
+          elemRect.bottom > sidebarRect.top &&
+          elemRect.top < sidebarRect.bottom) {
+        removeConnectionsForElement(element);
+        element.remove();
+      }
+    }
+
+    /*****************************************
+     * MAKE WORKSPACE BLOCKS DRAGGABLE (and support deletion)
+     *****************************************/
+    function makeDraggable(element) {
+      let isDragging = false, offsetX, offsetY;
+      element.addEventListener('mousedown', function(e) {
+        isDragging = true;
+        const rect = element.getBoundingClientRect();
+        offsetX = e.clientX - rect.left;
+        offsetY = e.clientY - rect.top;
+        element.style.cursor = 'grabbing';
+        element.style.zIndex = 1000;
+      });
+      document.addEventListener('mousemove', function(e) {
+        if (isDragging) {
+          const wsRect = workspace.getBoundingClientRect();
+          let newLeft = e.clientX - wsRect.left - offsetX;
+          let newTop  = e.clientY - wsRect.top - offsetY;
+          element.style.left = newLeft + 'px';
+          element.style.top  = newTop + 'px';
+          updateConnections();
+        }
+      });
+      document.addEventListener('mouseup', function(e) {
+        if (isDragging) {
+          isDragging = false;
+          element.style.cursor = 'move';
+          element.style.zIndex = '';
+          checkForDeletion(element);
+        }
+      });
+    }
+
+    /*****************************************
+     * Data Drop Handling with Inline Menu (for CSV data)
+     *****************************************/
+    function showDropMenu(dropElem) {
+      const menu = document.createElement('div');
+      menu.classList.add('drop-menu');
+      menu.innerHTML = `
+        <button class="paste-btn">Paste</button>
+        <button class="upload-btn">Upload</button>
+      `;
+      dropElem.appendChild(menu);
+      menu.querySelector('.paste-btn').addEventListener('click', (e) => {
+        e.stopPropagation();
+        e.preventDefault();
+        menu.remove();
+        const csv = window.prompt("Paste CSV data here (rows separated by newlines, values separated by commas):");
+        if (csv && csv.trim().length > 0) {
+          dropElem.setAttribute('data-csv', csv);
+          dropElem.innerHTML = "Data Loaded";
+        }
+      });
+      menu.querySelector('.upload-btn').addEventListener('click', (e) => {
+        e.stopPropagation();
+        e.preventDefault();
+        const fileInput = document.createElement('input');
+        fileInput.type = 'file';
+        fileInput.accept = '.csv,text/csv';
+        fileInput.style.display = 'none';
+        fileInput.addEventListener('change', function(event) {
+          const file = event.target.files[0];
+          if (file) {
+            const reader = new FileReader();
+            reader.onload = function(e) {
+              const csv = e.target.result;
+              dropElem.setAttribute('data-csv', csv);
+              dropElem.innerHTML = "Data Loaded";
+            };
+            reader.readAsText(file);
+          }
+        });
+        document.body.appendChild(fileInput);
+        fileInput.click();
+        fileInput.remove();
+        menu.remove();
+      });
+    }
+
+    /*****************************************
+     * Hyperparameter Drop Handling
+     *****************************************/
+    function attachHyperParamBlock(hyperparamArea, hyperparamData) {
+      const hpDiv = document.createElement('div');
+      hpDiv.classList.add('hyperparam-block');
+      hpDiv.innerHTML = `${hyperparamData.label}: <input type="number" value="${hyperparamData.default}" step="any">`;
+      hpDiv.setAttribute('data-hp-type', hyperparamData.type);
+      hyperparamArea.appendChild(hpDiv);
+    }
+
+    /*****************************************
+     * Add Event Handlers to Model / NN Block
+     *****************************************/
+    function addModelBlockHandlers(modelBlock) {
+      const decBtn = modelBlock.querySelector('.decrement');
+      const incBtn = modelBlock.querySelector('.increment');
+      const ratioSpan = modelBlock.querySelector('.ratio-value');
+      if (decBtn && incBtn && ratioSpan) {
+        decBtn.addEventListener('click', function(e) {
+          let value = parseFloat(ratioSpan.textContent);
+          value = Math.max(0.1, (value - 0.1).toFixed(1));
+          ratioSpan.textContent = value;
+        });
+        incBtn.addEventListener('click', function(e) {
+          let value = parseFloat(ratioSpan.textContent);
+          value = Math.min(0.9, (value + 0.1).toFixed(1));
+          ratioSpan.textContent = value;
+        });
+      }
+      modelBlock.querySelectorAll('.drop-area').forEach(dropElem => {
+        dropElem.addEventListener('dragover', function(e) {
+          e.preventDefault();
+          dropElem.classList.add('hover');
+        });
+        dropElem.addEventListener('dragleave', function(e) {
+          dropElem.classList.remove('hover');
+        });
+        dropElem.addEventListener('drop', function(e) {
+          e.preventDefault();
+          dropElem.classList.remove('hover');
+          const droppedType = e.dataTransfer.getData('text/plain');
+          if (droppedType === "dataBlock") {
+            showDropMenu(dropElem);
+          }
+        });
+      });
+      const hyperparamArea = modelBlock.querySelector('.hyperparam-area');
+      if (hyperparamArea) {
+        hyperparamArea.addEventListener('dragover', function(e) {
+          e.preventDefault();
+          hyperparamArea.classList.add('hover');
+        });
+        hyperparamArea.addEventListener('dragleave', function(e) {
+          hyperparamArea.classList.remove('hover');
+        });
+        hyperparamArea.addEventListener('drop', function(e) {
+          e.preventDefault();
+          hyperparamArea.classList.remove('hover');
+          const droppedType = e.dataTransfer.getData('text/plain');
+          let hpDataStr = e.dataTransfer.getData('hyperparam');
+          if (hpDataStr) {
+            const hpData = JSON.parse(hpDataStr);
+            hpData.type = droppedType;
+            attachHyperParamBlock(hyperparamArea, hpData);
+          }
+        });
+      }
+    }
+
+    /*****************************************
+     * RUN MODEL BUTTON: Gather parameters and network details
+     *****************************************/
+    document.getElementById('runBtn').addEventListener('click', function() {
+      const nnInput = workspace.querySelector('.input-layer');
+      const nnOutput = workspace.querySelector('.output-layer');
+      let useNeuralNetwork = false;
+      let nnArchitecture = [];
+      if (nnInput && nnOutput) {
+        useNeuralNetwork = true;
+        const neuronBlocks = Array.from(workspace.querySelectorAll('.neuron-layer'));
+        neuronBlocks.sort((a, b) => parseInt(a.style.left) - parseInt(b.style.left));
+        neuronBlocks.forEach(nb => {
+          const count = parseInt(nb.querySelector('.neuron-count').textContent);
+          nnArchitecture.push(count);
+        });
+      }
+      let modelBlocks = workspace.querySelectorAll('.model-block');
+      if (useNeuralNetwork) {
+        modelBlocks = [nnInput];
+      }
+      if (modelBlocks.length === 0) {
+        alert("Please drag at least one Model block into the workspace.");
+        return;
+      }
+      let names = [];
+      let duplicate = false;
+      modelBlocks.forEach(block => {
+        const nameInput = block.querySelector('.model-name');
+        const modelName = nameInput ? nameInput.value.trim() : "";
+        if (!modelName) {
+          alert("Every model must have a unique name. Please fill in all model names.");
+          duplicate = true;
+        }
+        if (names.includes(modelName)) {
+          alert("Model names must be unique. Duplicate found: " + modelName);
+          duplicate = true;
+        }
+        names.push(modelName);
+      });
+      if (duplicate) return;
+
+      const outputArea = document.getElementById('predictionOutput');
+      outputArea.innerHTML = "";
+
+      modelBlocks.forEach(block => {
+        let modelType = block.getAttribute('data-model-type');
+        let payload = {};
+        if (useNeuralNetwork) {
+          modelType = "feedforwardNN";
+          const modelName = block.querySelector('.model-name').value.trim();
+          const ratio = parseFloat(block.querySelector('.ratio-value').textContent);
+          const trainCsv = block.querySelector('.drop-area[data-purpose="train"]').getAttribute('data-csv');
+          const predictCsv = nnOutput.querySelector('.drop-area[data-purpose="predict"]').getAttribute('data-csv');
+          if (!trainCsv) {
+            alert("Train data missing for model: " + modelName);
+            return;
+          }
+          if (!predictCsv) {
+            alert("Predict data missing for model: " + modelName);
+            return;
+          }
+          const hyperparamArea = block.querySelector('.hyperparam-area');
+          const hyperparamElements = hyperparamArea ? hyperparamArea.querySelectorAll('.hyperparam-block') : [];
+          const hyperparams = {};
+          hyperparamElements.forEach(elem => {
+            const key = elem.getAttribute('data-hp-type');
+            const value = parseFloat(elem.querySelector('input').value);
+            hyperparams[key] = value;
+          });
+          payload = {
+            model_type: modelType,
+            model_name: modelName,
+            ratio: ratio,
+            train_csv_data: trainCsv,
+            predict_csv_data: predictCsv,
+            hyperparams: hyperparams,
+            nn_architecture: nnArchitecture
+          };
+        } else {
+          const modelName = block.querySelector('.model-name').value.trim();
+          const ratio = parseFloat(block.querySelector('.ratio-value').textContent);
+          const trainCsv = block.querySelector('.drop-area[data-purpose="train"]').getAttribute('data-csv');
+          const predictCsv = block.querySelector('.drop-area[data-purpose="predict"]').getAttribute('data-csv');
+          if (!trainCsv) {
+            alert("Train data missing for model: " + modelName);
+            return;
+          }
+          if (!predictCsv) {
+            alert("Predict data missing for model: " + modelName);
+            return;
+          }
+          const hyperparamArea = block.querySelector('.hyperparam-area');
+          const hyperparamElements = hyperparamArea ? hyperparamArea.querySelectorAll('.hyperparam-block') : [];
+          const hyperparams = {};
+          hyperparamElements.forEach(elem => {
+            const key = elem.getAttribute('data-hp-type');
+            const value = parseFloat(elem.querySelector('input').value);
+            hyperparams[key] = value;
+          });
+          payload = {
+            model_type: modelType,
+            model_name: modelName,
+            ratio: ratio,
+            train_csv_data: trainCsv,
+            predict_csv_data: predictCsv,
+            hyperparams: hyperparams
+          };
+        }
+        fetch('/run-model', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        })
+        .then(response => response.json())
+        .then(data => {
+          let resultText = "";
+          if (data.error) {
+            resultText = "Error: " + data.error;
+          } else {
+            resultText = "Predictions: " + data.predictions.join(", ");
+          }
+          outputArea.innerHTML += `<strong>Model: ${payload.model_name}</strong><br>${resultText}<hr>`;
+        })
+        .catch(err => {
+          outputArea.innerHTML += `<strong>Model: ${payload.model_name}</strong><br>Error: ${err}<hr>`;
+        });
+      });
+    });
+  </script>
+</body>
